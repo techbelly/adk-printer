@@ -1,85 +1,139 @@
 import cc.arduino.*;
 import processing.net.*;
 
-Client client;
-String data;
-
 ArduinoAdkUsb arduino;
+Reader reader;
+String[] log;
+int logline;
 
-boolean touch = false;
+void log(String s) {
+  log[logline] = s;
+  logline = (logline + 1) % 5;
+  if (arduino.isConnected()) {
+    for(int i = 0; i < s.length(); i++) {
+      arduino.write(s.charAt(i));
+    }
+    arduino.write('\n');
+  }
+}
 
-String printerId = "BEBEBEBE";
-String printerType = "A2-raw";
+class Reader extends Thread {
+  
+  int wait; 
+  String id;
+  PApplet app; 
+
+  Reader (int w, PApplet a) {
+    wait = w;
+    id = "";
+    app = a;
+  }
+  
+  void run ()  {
+    while (true) {
+      if (arduino.isConnected()) {
+         while (arduino.available() > 0) {
+           char c = arduino.readChar();
+           log("Reading data "+c);
+           if (c == '\n') {
+             Fetcher f = new Fetcher(id,app);
+             f.start();
+           } else {
+             id = id + c;
+           }
+         } 
+      }
+       try {
+        sleep((long)(wait));
+      } catch (Exception e) {
+      }
+    }
+  }
+}
+
+class Fetcher extends Thread {
+ 
+ String id;
+ Client client;
+ PApplet app; 
+ 
+ Fetcher(String s,PApplet a) {
+   id = s;
+   app = a;
+ } 
+ 
+ void downloadData() {
+  client = new Client(app,"printer.gofreerange.com",80); 
+  client.write("GET "); client.write("/printer/"); client.write(id); client.write(" HTTP/1.0\r\n");
+  client.write("Host: printer.gofreerange.com:80\r\n");
+  client.write("Accept: application/vnd.freerange.printer."); client.write("A2-raw"); client.write("\r\n");
+  client.write("\r\n");
+  log("Trying to download data");
+  log("Printer id "+id);
+ }
+ 
+ void consumeHeader() {
+   boolean parsingHeader = true;
+   int interest_piqued = 0;
+   while(client.available() > 0 && parsingHeader) {
+      char c = client.readChar();
+      if (interest_piqued == 0) {
+        if (c == '\n') {
+           interest_piqued = 1;
+         }
+       } else if (interest_piqued == 1) {
+         if (c == '\r') {
+            interest_piqued = 2;
+          } else {
+              interest_piqued = 0;
+          }
+       } else if (interest_piqued == 2) {
+          if (c == '\n') {
+             parsingHeader = false;
+          } 
+       }
+   }
+ }
+ 
+ void run() {
+   downloadData();
+   while (client.available() == 0) {
+      try {
+        sleep(100);
+      } catch (Exception e) {
+      }
+   }
+   consumeHeader();
+   while(client.available() > 0) {
+     char c = client.readChar();
+     arduino.write((byte)c);  
+   }
+   client.stop();
+ }
+}
+
 
 void setup() {
-  
-  arduino = new ArduinoAdkUsb( this );
 
+  arduino = new ArduinoAdkUsb( this );
+  log = new String[5];  
+  
   if ( arduino.list() != null )
     arduino.connect( arduino.list()[0] );
 
-  /* Lock PORTRAIT view */
   orientation( PORTRAIT );
-  downloadData();
+  reader = new Reader(500,this);
+  reader.start();
+  log("Starting");
 }
 
 void draw() {
   connected( arduino.isConnected() );
-  
-  if (client.available() > 0) {
-    parseData();
+  for(int i = 0; i < 5; i++) {
+    if (log[i] != null) {
+      text(log[i],20,i*50+100);
+    }
   }
-  
-  if (arduino.isConnected()) {
-    downloadData();
-    delay(1000);    
-  }
-}
-
-
-
-void downloadData() {
-  client= new Client(this,"printer.gofreerange.com",80); 
-  client.write("GET "); client.write("/printer/"); client.write(printerId); client.write(" HTTP/1.0\r\n");
-  client.write("Host: printer.gofreerange.com:80\r\n");
-  client.write("Accept: application/vnd.freerange.printer."); client.write(printerType); client.write("\r\n");
-  client.write("\r\n");
-  println("Trying to download data");
-}
-
-void parseData() {
-  println("Trying to parse data");
-
-  boolean parsingHeader = true;
-  int interest_piqued = 0;
-  
-  while(client.available() > 0) {
-      if (parsingHeader) {
-          char c = client.readChar();
-          if (interest_piqued == 0) {
-            if (c == '\n') {
-              interest_piqued = 1;
-            }
-          } else if (interest_piqued == 1) {
-            if (c == '\r') {
-              interest_piqued = 2;
-            } else {
-              interest_piqued = 0;
-            }
-          } else if (interest_piqued == 2) {
-            if (c == '\n') {
-               parsingHeader = false;
-            }
-          }
-       } else {
-          arduino.write((byte)client.read());
-        }
-      }
-    client.stop();
-}
-
-void onStop() {
-  finish();
 }
 
 void connected( boolean state ) {
